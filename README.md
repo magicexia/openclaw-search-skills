@@ -30,15 +30,7 @@ github-explorer（独立 repo）
 
 > 帮我安装这个 skill：https://github.com/blessonism/openclaw-search-skills
 
-### 方式二：用 ClawHub CLI
-
-```bash
-npx clawhub install search-layer
-npx clawhub install content-extract
-npx clawhub install mineru-extract
-```
-
-### 方式三：手动安装
+### 方式二：手动安装
 
 ```bash
 # 1. Clone 到任意位置
