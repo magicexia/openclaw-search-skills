@@ -1,26 +1,35 @@
 #!/usr/bin/env python3
 """
-Multi-source search v2.2: Exa + Tavily + Grok with intent-aware scoring and ranking.
+Multi-source search v2.3: Exa + Tavily + Grok + Semantic Scholar
+with intent-aware scoring and ranking.
 Brave is handled by the agent via built-in web_search (cannot be called from script).
 
 Sources:
-  Exa    - semantic search, good for technical/academic content
-  Tavily - web search with AI answer, good for general/news content
-  Grok   - xAI model with strong real-time knowledge, via completions API
+  Exa              - semantic search, good for technical/academic content
+  Tavily           - web search with AI answer, good for general/news content
+  Grok             - xAI model with strong real-time knowledge, via completions API
+  Semantic Scholar - academic paper search (200M+ papers, citations, metadata)
 
 Modes:
   fast   - Exa only (lightweight, low latency); falls back to Grok if no Exa key
-  deep   - Exa + Tavily + Grok parallel (max coverage)
+  deep   - Exa + Tavily + Grok parallel (+ Semantic Scholar if intent=academic)
   answer - Tavily search (includes AI-generated answer with citations)
 
 Intent types (affect scoring weights):
-  factual, status, comparison, tutorial, exploratory, news, resource
+  factual, status, comparison, tutorial, exploratory, news, resource, academic
+
+Academic intent (v2.3):
+  - Adds Semantic Scholar as additional source in deep mode
+  - Scoring includes citation count: keyword 0.15, freshness 0.15, authority 0.3, citations 0.4
+  - Returns paper metadata: authors, venue, year, citations, DOI, PDF links
 
 Usage:
   python3 search.py "query" --mode deep --num 5
   python3 search.py "query" --mode deep --intent status --freshness pw
   python3 search.py --queries "q1" "q2" --mode deep --intent comparison
   python3 search.py "query" --domain-boost github.com,stackoverflow.com
+  python3 search.py "transformer" --mode deep --intent academic --num 10
+  python3 search.py "CRISPR" --mode deep --intent academic --freshness py
 """
 
 import json
@@ -32,6 +41,7 @@ import concurrent.futures
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 from pathlib import Path
+from typing import Optional
 import threading
 
 # Global concurrency limiter: cap total HTTP threads across nested pools.
@@ -68,6 +78,8 @@ INTENT_WEIGHTS = {
     "exploratory": {"keyword": 0.3, "freshness": 0.2, "authority": 0.5},
     "news":        {"keyword": 0.3, "freshness": 0.6, "authority": 0.1},
     "resource":    {"keyword": 0.5, "freshness": 0.1, "authority": 0.4},
+    # Academic: citation count is the dominant signal
+    "academic":    {"keyword": 0.15, "freshness": 0.15, "authority": 0.3, "citations": 0.4},
 }
 
 # ---------------------------------------------------------------------------
@@ -223,6 +235,32 @@ def get_keyword_score(result: dict, query: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Citation scoring (academic)
+# ---------------------------------------------------------------------------
+def get_citation_score(citations: int) -> float:
+    """
+    Normalize citation count to 0.0-1.0 score using log scale.
+    Thresholds calibrated for cross-discipline use:
+      <5 → 0.1, 5-19 → 0.25, 20-49 → 0.4, 50-99 → 0.55,
+      100-499 → 0.7, 500-999 → 0.85, 1000+ → 1.0
+    """
+    if citations < 5:
+        return 0.1
+    elif citations < 20:
+        return 0.25
+    elif citations < 50:
+        return 0.4
+    elif citations < 100:
+        return 0.55
+    elif citations < 500:
+        return 0.7
+    elif citations < 1000:
+        return 0.85
+    else:
+        return 1.0
+
+
+# ---------------------------------------------------------------------------
 # Composite scoring
 # ---------------------------------------------------------------------------
 def score_result(result: dict, query: str, intent: str, boost_domains: set) -> float:
@@ -244,16 +282,24 @@ def score_result(result: dict, query: str, intent: str, boost_domains: set) -> f
         except Exception:
             pass
 
-    score = (weights["keyword"] * kw +
-             weights["freshness"] * fr +
-             weights["authority"] * au)
+    # Academic intent: include citation score
+    if "citations" in weights and "citations" in result:
+        cit = get_citation_score(result.get("citations", 0))
+        score = (weights["keyword"] * kw +
+                 weights["freshness"] * fr +
+                 weights["authority"] * au +
+                 weights["citations"] * cit)
+    else:
+        score = (weights["keyword"] * kw +
+                 weights["freshness"] * fr +
+                 weights["authority"] * au)
     return round(score, 4)
 
 
 # ---------------------------------------------------------------------------
 # API key loading
 # ---------------------------------------------------------------------------
-def _find_tools_md() -> str | None:
+def _find_tools_md() -> Optional[str]:
     """Walk up from CWD / known locations to find TOOLS.md."""
     candidates = [
         os.path.join(os.getcwd(), "TOOLS.md"),
@@ -460,6 +506,107 @@ def search_grok(query: str, api_url: str, api_key: str, model: str = "grok-4.1",
 
 
 @_throttled
+def search_semantic_scholar(query: str, num: int = 5,
+                            year_from: int = None,
+                            min_citations: int = 0,
+                            fields_of_study: list = None) -> list:
+    """
+    Semantic Scholar Academic Graph API (free, no key required).
+    Docs: https://api.semanticscholar.org/api-docs/graph
+
+    Returns papers with metadata: authors, venue, year, citations, DOI, PDF.
+    """
+    try:
+        params = {
+            "query": query,
+            "limit": min(num, 100),  # API max is 100
+            "fields": ("title,authors,venue,year,citationCount,"
+                       "influentialCitationCount,abstract,url,"
+                       "openAccessPdf,externalIds"),
+        }
+        if min_citations > 0:
+            params["minCitationCount"] = min_citations
+        if year_from:
+            params["year"] = f"{year_from}-"
+        if fields_of_study:
+            params["fieldsOfStudy"] = ",".join(fields_of_study)
+
+        r = requests.get(
+            "https://api.semanticscholar.org/graph/v1/paper/search",
+            params=params,
+            headers={"Accept": "application/json"},
+            timeout=20,
+        )
+        r.raise_for_status()
+        data = r.json()
+
+        results = []
+        for paper in data.get("data", []):
+            if not paper:
+                continue
+
+            # Authors: first 3 + "et al."
+            authors_list = paper.get("authors") or []
+            if authors_list:
+                names = [a.get("name", "") for a in authors_list[:3]]
+                authors_str = ", ".join(n for n in names if n)
+                if len(authors_list) > 3:
+                    authors_str += " et al."
+            else:
+                authors_str = ""
+
+            # Abstract → snippet (truncate to 300 chars)
+            abstract = paper.get("abstract") or ""
+            snippet = (abstract[:300] + "...") if len(abstract) > 300 else abstract
+
+            # External IDs
+            ext_ids = paper.get("externalIds") or {}
+            doi = ext_ids.get("DOI", "")
+            arxiv_id = ext_ids.get("ArXiv", "")
+
+            # Open access PDF
+            pdf_info = paper.get("openAccessPdf") or {}
+            pdf_url = pdf_info.get("url", "") if isinstance(pdf_info, dict) else ""
+
+            # Build URL: prefer DOI link, fallback to S2 URL
+            paper_url = paper.get("url", "")
+            if doi and not paper_url:
+                paper_url = f"https://doi.org/{doi}"
+
+            results.append({
+                # Standard fields (compatible with other sources)
+                "title": paper.get("title", ""),
+                "url": paper_url,
+                "snippet": snippet,
+                "published_date": str(paper.get("year", "")),
+                "source": "semantic_scholar",
+                # Academic metadata
+                "authors": authors_str,
+                "venue": paper.get("venue", ""),
+                "citations": paper.get("citationCount", 0) or 0,
+                "influential_citations": paper.get("influentialCitationCount", 0) or 0,
+                "doi": doi,
+                "arxiv_id": arxiv_id,
+                "pdf_url": pdf_url,
+            })
+        return results
+
+    except requests.exceptions.Timeout:
+        print("[semantic_scholar] timeout after 20s", file=sys.stderr)
+        return []
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "?"
+        if status == 429:
+            print("[semantic_scholar] rate limit exceeded", file=sys.stderr)
+        else:
+            print(f"[semantic_scholar] HTTP {status}", file=sys.stderr)
+        return []
+    except Exception as e:
+        print(f"[semantic_scholar] error: {e}", file=sys.stderr)
+        return []
+
+
+@_throttled
 def search_exa(query: str, key: str, num: int = 5) -> list:
     try:
         r = requests.post(
@@ -536,7 +683,10 @@ def dedup(results: list) -> list:
     seen = {}
     out = []
     for r in results:
-        key = normalize_url(r["url"])
+        url = r.get("url", "")
+        if not url:
+            continue
+        key = normalize_url(url)
         if key not in seen:
             seen[key] = r
             out.append(r)
@@ -545,6 +695,16 @@ def dedup(results: list) -> list:
             src = existing["source"]
             if r["source"] not in src:
                 existing["source"] = f"{src}, {r['source']}"
+            # Merge academic metadata: keep richer values
+            if r.get("citations") and (not existing.get("citations")
+                                        or r["citations"] > existing.get("citations", 0)):
+                for field in ("citations", "influential_citations", "authors",
+                              "venue", "doi", "arxiv_id"):
+                    if r.get(field):
+                        existing[field] = r[field]
+            # Prefer non-empty PDF URL
+            if r.get("pdf_url") and not existing.get("pdf_url"):
+                existing["pdf_url"] = r["pdf_url"]
     return out
 
 
@@ -553,7 +713,8 @@ def dedup(results: list) -> list:
 # ---------------------------------------------------------------------------
 def execute_search(query: str, mode: str, keys: dict, num: int,
                    include_answer: bool = False,
-                   freshness: str = None) -> tuple:
+                   freshness: str = None,
+                   intent: str = None) -> tuple:
     """Execute search for a single query. Returns (results_list, answer_text)."""
     all_results = []
     answer_text = None
@@ -564,6 +725,8 @@ def execute_search(query: str, mode: str, keys: dict, num: int,
     grok_model = keys.get("grok_model", "grok-4.1")
     has_grok = bool(grok_url and grok_key)
 
+    is_academic = (intent == "academic")
+
     if mode == "fast":
         if "exa" in keys:
             all_results = search_exa(query, keys["exa"], num)
@@ -572,9 +735,14 @@ def execute_search(query: str, mode: str, keys: dict, num: int,
         else:
             print('{"warning": "No API keys found for fast mode"}',
                   file=sys.stderr)
+        # Academic fast: also query Semantic Scholar
+        if is_academic:
+            year_from = _freshness_to_year(freshness)
+            all_results.extend(search_semantic_scholar(query, num, year_from=year_from))
 
     elif mode == "deep":
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        max_workers = 4 if is_academic else 3
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {}
             if "exa" in keys:
                 futures[pool.submit(search_exa, query, keys["exa"], num)] = "exa"
@@ -585,6 +753,12 @@ def execute_search(query: str, mode: str, keys: dict, num: int,
             if has_grok:
                 futures[pool.submit(
                     search_grok, query, grok_url, grok_key, grok_model, num, freshness)] = "grok"
+            # Academic: add Semantic Scholar as parallel source
+            if is_academic:
+                year_from = _freshness_to_year(freshness)
+                futures[pool.submit(
+                    search_semantic_scholar, query, num,
+                    year_from=year_from)] = "semantic_scholar"
             for fut in concurrent.futures.as_completed(futures):
                 name = futures[fut]
                 try:
@@ -605,8 +779,21 @@ def execute_search(query: str, mode: str, keys: dict, num: int,
                                 include_answer=True, freshness=freshness)
             all_results = tav["results"]
             answer_text = tav.get("answer")
+        # Academic answer: also query Semantic Scholar
+        if is_academic:
+            year_from = _freshness_to_year(freshness)
+            all_results.extend(search_semantic_scholar(query, num, year_from=year_from))
 
     return all_results, answer_text
+
+
+def _freshness_to_year(freshness: Optional[str]) -> Optional[int]:
+    """Convert freshness filter to a year_from value for Semantic Scholar."""
+    if not freshness:
+        return None
+    now_year = datetime.now(timezone.utc).year
+    mapping = {"pd": now_year, "pw": now_year, "pm": now_year, "py": now_year - 1}
+    return mapping.get(freshness)
 
 
 # ---------------------------------------------------------------------------
@@ -624,7 +811,7 @@ def main():
                     help="Results per source per query (default 5)")
     ap.add_argument("--intent",
                     choices=["factual", "status", "comparison", "tutorial",
-                             "exploratory", "news", "resource"],
+                             "exploratory", "news", "resource", "academic"],
                     default=None,
                     help="Query intent type for scoring (default: no intent scoring)")
     ap.add_argument("--freshness", choices=["pd", "pw", "pm", "py"], default=None,
@@ -655,7 +842,8 @@ def main():
         results, answer_text = execute_search(
             queries[0], args.mode, keys, args.num,
             include_answer=(args.mode == "answer"),
-            freshness=args.freshness)
+            freshness=args.freshness,
+            intent=args.intent)
         all_results = results
     else:
         # Cap outer concurrency: each query may spawn up to 3 inner threads (deep mode),
@@ -664,7 +852,7 @@ def main():
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {
                 pool.submit(execute_search, q, args.mode, keys, args.num,
-                            freshness=args.freshness): q
+                            freshness=args.freshness, intent=args.intent): q
                 for q in queries
             }
             for fut in concurrent.futures.as_completed(futures):
