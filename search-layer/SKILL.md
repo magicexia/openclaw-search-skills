@@ -43,6 +43,7 @@ description: >
 | **Exploratory** | "深入了解 X"、"X 生态"、"about X" | deep | — | 权威 0.5 |
 | **News** | "X 新闻"、"本周 X"、"X this week" | deep | pd/pw | 新鲜度 0.6 |
 | **Resource** | "X 官网"、"X GitHub"、"X 文档" | fast | — | 关键词 0.5 |
+| **Academic** | "X 论文"、"X 研究"、"X paper" | deep | py | 权威 0.7 |
 
 > 详细分类指南见 `references/intent-guide.md`
 
@@ -158,6 +159,7 @@ search.py "query" --mode deep --intent tutorial --domain-boost dev.to,freecodeca
 ```
 
 推荐搭配：
+- Academic → `arxiv.org,nature.com,science.org,cell.com,ieeexplore.ieee.org,pubmed.ncbi.nlm.nih.gov`
 - Tutorial → `dev.to, freecodecamp.org, realpython.com, baeldung.com`
 - Resource → `github.com`
 - News → `techcrunch.com, arstechnica.com, theverge.com`
@@ -236,3 +238,4 @@ search.py "query" --mode deep --intent tutorial --domain-boost dev.to,freecodeca
 | 最新动态 | `web_search(freshness="pw")` + `search.py --mode deep --intent status --freshness pw` |
 | 对比分析 | `web_search` × 3 queries + `search.py --queries "A vs B" "A pros" "B pros" --intent comparison` |
 | 找资源 | `web_search` + `search.py --mode fast --intent resource` |
+| 学术检索 | `search.py "Transformer research" --mode deep --intent academic --freshness py --domain-boost arxiv.org,nature.com` |

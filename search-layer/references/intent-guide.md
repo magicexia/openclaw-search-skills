@@ -149,6 +149,45 @@ keyword_match: 0.3, freshness: 0.6, authority: 0.1
 keyword_match: 0.5, freshness: 0.1, authority: 0.4
 ```
 
+---
+
+### 8. Academic（学术检索）
+
+**识别信号**：
+- "X 论文"、"X 研究"、"X paper"、"X journal"
+- 涉及期刊名称：Nature、Science、Cell、arXiv、IEEE、ACM 等
+- 查询学术数据库：PubMed、Google Scholar、Semantic Scholar 等
+- 学术主题词汇：hypothesis、methodology、method、doi 等
+
+**搜索策略**：
+- Mode: `deep`（需要多源验证）
+- Freshness: `py`（过去一年，可调整）
+- 查询扩展: 
+  - 加 "paper"、"research"、"study"、"publication"
+  - 同时生成英文变体（学术检索强烈推荐英文查询）
+  - 添加年份范围（如 "2023-2024"）
+- Domain boost: `arxiv.org,nature.com,science.org,cell.com,ieeexplore.ieee.org,dl.acm.org`
+- 结果偏好: 学术期刊 > 预印本 > 会议论文 > 技术报告
+
+**权重配置**：`--intent academic`
+```
+keyword_match: 0.3, freshness: 0.2, authority: 0.7  # 权威性最重要
+```
+
+**学术检索专用命令示例**：
+```bash
+# 查找最新Transformer论文
+python3 search.py "Transformer architecture research" --mode deep --intent academic --freshness py --num 10
+
+# 搜索特定领域学术文献
+python3 search.py "deep learning medical imaging" --mode deep --intent academic --domain-boost arxiv.org,pubmed.ncbi.nlm.nih.gov,nature.com
+
+# 对比性学术研究
+python3 search.py --queries "BERT vs GPT models comparison" "BERT research papers" "GPT research papers" --mode deep --intent academic --num 5
+```
+
+---
+
 ## 意图判断流程
 
 ```

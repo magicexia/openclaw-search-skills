@@ -68,6 +68,7 @@ INTENT_WEIGHTS = {
     "exploratory": {"keyword": 0.3, "freshness": 0.2, "authority": 0.5},
     "news":        {"keyword": 0.3, "freshness": 0.6, "authority": 0.1},
     "resource":    {"keyword": 0.5, "freshness": 0.1, "authority": 0.4},
+    "academic":    {"keyword": 0.3, "freshness": 0.2, "authority": 0.7},  # 学术检索：权威性最重要
 }
 
 # ---------------------------------------------------------------------------
@@ -624,7 +625,7 @@ def main():
                     help="Results per source per query (default 5)")
     ap.add_argument("--intent",
                     choices=["factual", "status", "comparison", "tutorial",
-                             "exploratory", "news", "resource"],
+                             "exploratory", "news", "resource", "academic"],
                     default=None,
                     help="Query intent type for scoring (default: no intent scoring)")
     ap.add_argument("--freshness", choices=["pd", "pw", "pm", "py"], default=None,
