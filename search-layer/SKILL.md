@@ -239,3 +239,5 @@ search.py "query" --mode deep --intent tutorial --domain-boost dev.to,freecodeca
 | 对比分析 | `web_search` × 3 queries + `search.py --queries "A vs B" "A pros" "B pros" --intent comparison` |
 | 找资源 | `web_search` + `search.py --mode fast --intent resource` |
 | 学术检索 | `search.py "Transformer research" --mode deep --intent academic --freshness py --domain-boost arxiv.org,nature.com` |
+
+**学术检索特性**：自动为每条结果附带可点击链接（Markdown 格式：`[标题](链接)`）

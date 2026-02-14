@@ -684,6 +684,17 @@ def main():
             r["score"] = score_result(r, primary_query, args.intent, boost_domains)
         deduped.sort(key=lambda x: x.get("score", 0), reverse=True)
 
+    # For academic intent, add formatted links for easy access
+    if args.intent == "academic":
+        for r in deduped:
+            title = r.get("title", "Paper")
+            url = r.get("url", "")
+            if url:
+                # Create markdown-style formatted link
+                r["link"] = f"[{title}]({url})"
+                r["link_markdown"] = f"[🔗 {title}]({url})"
+                r["link_text"] = url
+
     # Build output
     output = {
         "mode": args.mode,
