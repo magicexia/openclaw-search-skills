@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 """
-Multi-source search v2.2: Exa + Tavily + Grok with intent-aware scoring and ranking.
+Multi-source search v2.3: Exa + Tavily + Grok + OpenAlex with intent-aware scoring and ranking.
 Brave is handled by the agent via built-in web_search (cannot be called from script).
 
 Sources:
-  Exa    - semantic search, good for technical/academic content
-  Tavily - web search with AI answer, good for general/news content
-  Grok   - xAI model with strong real-time knowledge, via completions API
+  Exa      - semantic search, good for technical/academic content
+  Tavily   - web search with AI answer, good for general/news content
+  Grok     - xAI model with strong real-time knowledge, via completions API
+  OpenAlex - free academic knowledge graph, 200M+ papers (auto-used for academic intent)
 
 Modes:
-  fast   - Exa only (lightweight, low latency); falls back to Grok if no Exa key
-  deep   - Exa + Tavily + Grok parallel (max coverage)
-  answer - Tavily search (includes AI-generated answer with citations)
+  fast     - Exa only (lightweight, low latency); falls back to Grok if no Exa key
+  deep     - Exa + Tavily + Grok parallel (max coverage)
+  answer   - Tavily search (includes AI-generated answer with citations)
+  academic - OpenAlex + Tavily parallel (academic-focused)
 
 Intent types (affect scoring weights):
-  factual, status, comparison, tutorial, exploratory, news, resource
+  factual, status, comparison, tutorial, exploratory, news, resource, academic
 
 Usage:
   python3 search.py "query" --mode deep --num 5
   python3 search.py "query" --mode deep --intent status --freshness pw
+  python3 search.py "query" --mode academic --intent academic  # Academic-optimized
   python3 search.py --queries "q1" "q2" --mode deep --intent comparison
   python3 search.py "query" --domain-boost github.com,stackoverflow.com
 """
@@ -277,6 +280,7 @@ def get_keys():
             "grok_key":   re.compile(r'\*\*Grok API Key\*\*:\s*`([^`]+)`'),
             "grok_url":   re.compile(r'\*\*Grok API URL\*\*:\s*`([^`]+)`'),
             "grok_model": re.compile(r'\*\*Grok Model\*\*:\s*`([^`]+)`'),
+            "openalex":   re.compile(r'\*\*OpenAlex\*\*:\s*`([^`]+)`'),
         }
         try:
             with open(tools_md) as f:
@@ -298,6 +302,8 @@ def get_keys():
         keys["grok_url"] = v
     if v := os.environ.get("GROK_MODEL"):
         keys["grok_model"] = v
+    if v := os.environ.get("OPENALEX_API_KEY"):
+        keys["openalex"] = v
     return keys
 
 
@@ -530,6 +536,95 @@ def search_tavily(query: str, key: str, num: int = 5,
         return {"results": [], "answer": None}
 
 
+@_throttled
+def search_openalex(query: str, api_key: str = None, num: int = 5,
+                     freshness: str = None) -> list:
+    """Search OpenAlex academic knowledge graph.
+    OpenAlex is free and provides 200M+ scholarly works."""
+    try:
+        # Build query URL
+        base_url = "https://api.openalex.org/works"
+        
+        # Build search parameters (OpenAlex doesn't support sorting by relevance_score in ascending)
+        params = {
+            "search": query,
+            "per-page": num,
+            # OpenAlex default sort is by relevance, no explicit sort needed
+        }
+        
+        # Add publication year filter if freshness specified
+        if freshness == "py":
+            from datetime import datetime
+            year = datetime.now().year - 1
+            params["filter"] = f"publication_year:>={year}"
+        
+        # Headers with optional API key
+        headers = {"User-Agent": "OpenClaw-Search-Layer/1.0"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        
+        url = f"{base_url}?{urlencode(params)}"
+        r = requests.get(url, headers=headers, timeout=20)
+        r.raise_for_status()
+        
+        data = r.json()
+        results = []
+        
+        for work in data.get("results", []):
+            # Extract title
+            title = work.get("display_name", work.get("title", ""))
+            
+            # Extract URL (prefer DOI URL, then primary location)
+            url = ""
+            primary_loc = work.get("primary_location", {})
+            if primary_loc:
+                url = primary_loc.get("landing_page_url", "") or primary_loc.get("url", "")
+            if not url and work.get("doi"):
+                url = f"https://doi.org/{work.get('doi')}"
+            
+            # Extract publication date/year
+            pub_date = work.get("publication_date", "")
+            pub_year = work.get("publication_year", "")
+            published_date = pub_date or (str(pub_year) if pub_year else "")
+            
+            # Extract abstract/snippet
+            abstract = work.get("abstract", "") or ""
+            # Truncate abstract if too long
+            snippet = abstract[:500] + "..." if len(abstract) > 500 else abstract
+            
+            # Extract authors
+            authors = work.get("authorships", [])
+            author_names = [a.get("author", {}).get("display_name", "") for a in authors[:3]]
+            author_str = ", ".join(author_names) if author_names else ""
+            
+            # Build snippet with authors if available
+            full_snippet = snippet
+            if author_str:
+                full_snippet = f"{author_str}. {snippet}" if snippet else author_str
+            
+            # Extract journal/conference
+            host = primary_loc.get("host_venue", {})
+            journal = host.get("display_name", "") if host else ""
+            if journal:
+                full_snippet = f"[{journal}] {full_snippet}" if full_snippet else journal
+            
+            results.append({
+                "title": title,
+                "url": url,
+                "snippet": full_snippet,
+                "published_date": published_date,
+                "source": "openalex",
+                "openalex_id": work.get("id", ""),
+                "doi": work.get("doi", ""),
+                "citation_count": work.get("cited_by_count", 0),
+            })
+        
+        return results
+    except Exception as e:
+        print(f"[openalex] error: {e}", file=sys.stderr)
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Dedup
 # ---------------------------------------------------------------------------
@@ -607,6 +702,30 @@ def execute_search(query: str, mode: str, keys: dict, num: int,
             all_results = tav["results"]
             answer_text = tav.get("answer")
 
+    elif mode == "academic":
+        # Academic mode: OpenAlex + Tavily parallel (OpenAlex is free, Tavily provides web context)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = {}
+            # OpenAlex is free, no API key required (optional API key increases rate limits)
+            futures[pool.submit(
+                search_openalex, query, keys.get("openalex"), num, freshness)] = "openalex"
+            # Tavily for web context (news, blogs about recent papers)
+            if "tavily" in keys:
+                futures[pool.submit(
+                    search_tavily, query, keys["tavily"], num,
+                    freshness=freshness)] = "tavily"
+            for fut in concurrent.futures.as_completed(futures):
+                name = futures[fut]
+                try:
+                    res = fut.result()
+                except Exception as e:
+                    print(f"[{name}] error: {e}", file=sys.stderr)
+                    continue
+                if isinstance(res, dict):
+                    all_results.extend(res.get("results", []))
+                else:
+                    all_results.extend(res)
+
     return all_results, answer_text
 
 
@@ -615,12 +734,12 @@ def execute_search(query: str, mode: str, keys: dict, num: int,
 # ---------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(
-        description="Multi-source search v2 (Exa + Tavily) with intent-aware scoring")
+        description="Multi-source search v2.3 (Exa + Tavily + Grok + OpenAlex) with intent-aware scoring")
     ap.add_argument("query", nargs="?", default=None, help="Search query (single)")
     ap.add_argument("--queries", nargs="+", default=None,
                     help="Multiple queries to execute in parallel")
-    ap.add_argument("--mode", choices=["fast", "deep", "answer"], default="deep",
-                    help="fast=Exa only | deep=Exa+Tavily | answer=Tavily with AI answer")
+    ap.add_argument("--mode", choices=["fast", "deep", "answer", "academic"], default="deep",
+                    help="fast=Exa only | deep=Exa+Tavily | answer=Tavily+AI | academic=OpenAlex+Tavily")
     ap.add_argument("--num", type=int, default=5,
                     help="Results per source per query (default 5)")
     ap.add_argument("--intent",
