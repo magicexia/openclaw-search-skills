@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-Multi-source search v2.3: Exa + Tavily + Grok + OpenAlex with intent-aware scoring and ranking.
+Multi-source search v2.4: Exa + Tavily + Grok + OpenAlex + Semantic Scholar with intent-aware scoring and ranking.
 Brave is handled by the agent via built-in web_search (cannot be called from script).
 
 Sources:
-  Exa      - semantic search, good for technical/academic content
-  Tavily   - web search with AI answer, good for general/news content
-  Grok     - xAI model with strong real-time knowledge, via completions API
-  OpenAlex - free academic knowledge graph, 200M+ papers (auto-used for academic intent)
+  Exa              - semantic search, good for technical/academic content
+  Tavily           - web search with AI answer, good for general/news content
+  Grok              - xAI model with strong real-time knowledge, via completions API
+  OpenAlex         - free academic knowledge graph, 200M+ papers
+  SemanticScholar  - academic search API, high-quality citations (requires API key for search)
 
 Modes:
-  fast     - Exa only (lightweight, low latency); falls back to Grok if no Exa key
-  deep     - Exa + Tavily + Grok parallel (max coverage)
-  answer   - Tavily search (includes AI-generated answer with citations)
-  academic - OpenAlex + Tavily parallel (academic-focused)
+  fast             - Exa only (lightweight, low latency); falls back to Grok if no Exa key
+  deep             - Exa + Tavily + Grok parallel (max coverage)
+  answer           - Tavily search (includes AI-generated answer with citations)
+  academic         - Semantic Scholar + OpenAlex + Tavily parallel (academic-focused)
 
 Intent types (affect scoring weights):
   factual, status, comparison, tutorial, exploratory, news, resource, academic
@@ -275,12 +276,13 @@ def get_keys():
     if tools_md:
         # Regex patterns: match **Label**: `value` with flexible whitespace
         _KEY_PATTERNS = {
-            "exa":        re.compile(r'\*\*Exa\*\*:\s*`([^`]+)`'),
-            "tavily":     re.compile(r'\*\*Tavily\*\*:\s*`([^`]+)`'),
-            "grok_key":   re.compile(r'\*\*Grok API Key\*\*:\s*`([^`]+)`'),
-            "grok_url":   re.compile(r'\*\*Grok API URL\*\*:\s*`([^`]+)`'),
-            "grok_model": re.compile(r'\*\*Grok Model\*\*:\s*`([^`]+)`'),
-            "openalex":   re.compile(r'\*\*OpenAlex\*\*:\s*`([^`]+)`'),
+            "exa":           re.compile(r'\*\*Exa\*\*:\s*`([^`]+)`'),
+            "tavily":        re.compile(r'\*\*Tavily\*\*:\s*`([^`]+)`'),
+            "grok_key":      re.compile(r'\*\*Grok API Key\*\*:\s*`([^`]+)`'),
+            "grok_url":      re.compile(r'\*\*Grok API URL\*\*:\s*`([^`]+)`'),
+            "grok_model":    re.compile(r'\*\*Grok Model\*\*:\s*`([^`]+)`'),
+            "openalex":      re.compile(r'\*\*OpenAlex\*\*:\s*`([^`]+)`'),
+            "semantic":      re.compile(r'\*\*Semantic Scholar\*\*:\s*`([^`]+)`'),
         }
         try:
             with open(tools_md) as f:
@@ -304,6 +306,8 @@ def get_keys():
         keys["grok_model"] = v
     if v := os.environ.get("OPENALEX_API_KEY"):
         keys["openalex"] = v
+    if v := os.environ.get("SEMANTIC_API_KEY"):
+        keys["semantic"] = v
     return keys
 
 
@@ -625,6 +629,95 @@ def search_openalex(query: str, api_key: str = None, num: int = 5,
         return []
 
 
+@_throttled
+def search_semantic_scholar(query: str, api_key: str = None, num: int = 5,
+                            freshness: str = None) -> list:
+    """Search Semantic Scholar Academic Graph API.
+    API docs: https://api.semanticscholar.org/api-docs/
+    Requires API key for search endpoint (rate limited without key)."""
+    try:
+        base_url = "https://api.semanticscholar.org/graph/v1/paper/search"
+        
+        # Build query parameters
+        params = {
+            "query": query,
+            "limit": min(num, 100),  # Max 100 per request
+            "fields": "title,authors,year,url,abstract,citationCount,venue,externalIds",
+        }
+        
+        # Headers
+        headers = {
+            "User-Agent": "OpenClaw-Search-Layer/1.0",
+            "Accept": "application/json",
+        }
+        if api_key:
+            headers["x-api-key"] = api_key
+        
+        url = f"{base_url}?{urlencode(params)}"
+        r = requests.get(url, headers=headers, timeout=20)
+        
+        # Rate limited without API key
+        if r.status_code == 429:
+            print("[semantic_scholar] rate limited (API key required for search)", file=sys.stderr)
+            return []
+        
+        r.raise_for_status()
+        data = r.json()
+        
+        results = []
+        for paper in data.get("data", []):
+            # Extract title
+            title = paper.get("title", "")
+            
+            # Extract URL (prefer Semantic Scholar URL, then DOI)
+            url = paper.get("url", "")
+            ext_ids = paper.get("externalIds", {})
+            if not url and ext_ids.get("DOI"):
+                url = f"https://doi.org/{ext_ids['DOI']}"
+            
+            # Extract publication year
+            year = paper.get("year", "")
+            published_date = str(year) if year else ""
+            
+            # Extract abstract
+            abstract = paper.get("abstract", "") or ""
+            snippet = abstract[:500] + "..." if len(abstract) > 500 else abstract
+            
+            # Extract authors
+            authors = paper.get("authors", [])
+            author_names = [a.get("name", "") for a in authors[:3]]
+            author_str = ", ".join(author_names) if author_names else ""
+            
+            # Build snippet
+            full_snippet = snippet
+            if author_str:
+                full_snippet = f"{author_str}. {snippet}" if snippet else author_str
+            
+            # Extract venue/journal
+            venue = paper.get("venue", "")
+            if venue:
+                full_snippet = f"[{venue}] {full_snippet}" if full_snippet else venue
+            
+            # Citation count
+            citation_count = paper.get("citationCount", 0)
+            
+            results.append({
+                "title": title,
+                "url": url,
+                "snippet": full_snippet,
+                "published_date": published_date,
+                "source": "semantic_scholar",
+                "semantic_scholar_id": paper.get("paperId", ""),
+                "external_ids": ext_ids,
+                "citation_count": citation_count,
+            })
+        
+        return results
+    except Exception as e:
+        print(f"[semantic_scholar] error: {e}", file=sys.stderr)
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Dedup
 # ---------------------------------------------------------------------------
@@ -703,17 +796,28 @@ def execute_search(query: str, mode: str, keys: dict, num: int,
             answer_text = tav.get("answer")
 
     elif mode == "academic":
-        # Academic mode: OpenAlex + Tavily parallel (OpenAlex is free, Tavily provides web context)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        # Academic mode: Semantic Scholar + OpenAlex + Tavily parallel
+        # Semantic Scholar provides high-quality academic search with citations
+        # OpenAlex is free and comprehensive
+        # Tavily provides web context (news, blogs about recent papers)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
             futures = {}
+            
+            # Semantic Scholar (requires API key for search, rate limited without)
+            if keys.get("semantic"):
+                futures[pool.submit(
+                    search_semantic_scholar, query, keys.get("semantic"), num, freshness)] = "semantic_scholar"
+            
             # OpenAlex is free, no API key required (optional API key increases rate limits)
             futures[pool.submit(
                 search_openalex, query, keys.get("openalex"), num, freshness)] = "openalex"
-            # Tavily for web context (news, blogs about recent papers)
+            
+            # Tavily for web context
             if "tavily" in keys:
                 futures[pool.submit(
                     search_tavily, query, keys["tavily"], num,
                     freshness=freshness)] = "tavily"
+            
             for fut in concurrent.futures.as_completed(futures):
                 name = futures[fut]
                 try:

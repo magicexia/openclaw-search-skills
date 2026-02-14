@@ -2,15 +2,15 @@
 name: search-layer
 description: >
   Multi-source search and deduplication layer with intent-aware scoring.
-  Integrates Brave Search (web_search), Exa, Tavily, and Grok to provide
-  high-coverage, high-quality results. Automatically classifies query intent
+  Integrates Brave Search (web_search), Exa, Tavily, Grok, OpenAlex, and Semantic Scholar
+  to provide high-coverage, high-quality results. Automatically classifies query intent
   and adjusts search strategy, scoring weights, and result synthesis accordingly.
   Triggers on "deep search", "multi-source search", or when high-quality research is needed.
 ---
 
-# Search Layer v2.2 — 意图感知多源检索协议
+# Search Layer v2.4 — 意图感知多源检索协议
 
-四源同级：Brave (`web_search`) + Exa + Tavily + Grok。按意图自动选策略、调权重、做合成。
+五源同级：Brave (`web_search`) + Exa + Tavily + Grok + OpenAlex + Semantic Scholar。按意图自动选策略、调权重、做合成。
 
 ## 执行流程
 
@@ -21,7 +21,7 @@ description: >
     ↓
 [Phase 2] 查询分解 & 扩展 → 生成子查询
     ↓
-[Phase 3] 多源并行检索 → Brave + search.py (Exa + Tavily + Grok)
+[Phase 3] 多源并行检索 → Brave + search.py (Exa + Tavily + Grok + OpenAlex + Semantic Scholar)
     ↓
 [Phase 4] 结果合并 & 排序 → 去重 + 意图加权评分
     ↓
@@ -100,12 +100,12 @@ python3 /home/node/.openclaw/workspace/skills/search-layer/scripts/search.py \
 ```
 
 **各模式源参与矩阵**：
-| 模式 | Exa | Tavily | Grok | OpenAlex | 说明 |
-|------|-----|--------|------|----------|------|
-| fast | ✅ | ❌ | fallback | ❌ | Exa 优先；无 Exa key 时用 Grok |
-| deep | ✅ | ✅ | ✅ | ❌ | 三源并行 |
-| answer | ❌ | ✅ | ❌ | ❌ | 仅 Tavily（含 AI answer） |
-| academic | ❌ | ✅ | ❌ | ✅ | OpenAlex + Tavily 学术检索 |
+| 模式 | Exa | Tavily | Grok | OpenAlex | Semantic | 说明 |
+|------|-----|--------|------|----------|----------|------|
+| fast | ✅ | ❌ | fallback | ❌ | ❌ | Exa 优先；无 Exa key 时用 Grok |
+| deep | ✅ | ✅ | ✅ | ❌ | ❌ | 三源并行 |
+| answer | ❌ | ✅ | ❌ | ❌ | ❌ | 仅 Tavily（含 AI answer） |
+| academic | ❌ | ✅ | ❌ | ✅ | ✅ | OpenAlex + Semantic + Tavily 学术检索 |
 
 **参数说明**：
 | 参数 | 说明 |
@@ -120,9 +120,17 @@ python3 /home/node/.openclaw/workspace/skills/search-layer/scripts/search.py \
 **OpenAlex 源说明**：
 - 免费的学术知识图谱，2亿+ 学术文献
 - 无需 API Key 即可使用（注册后有更高限流）
-- 在 **academic** 模式下与 Tavily 并行检索
+- 在 **academic** 模式下与 Semantic Scholar、Tavily 并行检索
 - 返回论文标题、作者、DOI、引用数、被引次数等元数据
 - 需要在 TOOLS.md 中配置 `OpenAlex` API Key（可选）
+
+**Semantic Scholar 源说明**：
+- 高质量学术搜索 API，提供引用网络和论文影响力数据
+- **需要 API Key** 才能进行搜索（免费申请：https://www.semanticscholar.org/product/api）
+- 无 API Key 时会被速率限制，无法搜索
+- 在 **academic** 模式下与 OpenAlex、Tavily 并行检索
+- 返回论文标题、作者、年份、摘要、引用数、DOI、外部 ID 等元数据
+- 需要在 TOOLS.md 中配置 `Semantic Scholar` API Key
 
 **Grok 源说明**：
 - 通过 completions API 调用 Grok 模型（`grok-4.1`），利用其实时知识返回结构化搜索结果
@@ -224,7 +232,8 @@ search.py "query" --mode deep --intent tutorial --domain-boost dev.to,freecodeca
 - Exa 429/5xx → 继续 Brave + Tavily + Grok
 - Tavily 429/5xx → 继续 Brave + Exa + Grok
 - Grok 超时/错误 → 继续 Brave + Exa + Tavily
-- OpenAlex 错误 → 仅用 Tavily（学术检索降级为通用搜索）
+- OpenAlex 错误 → 仅用 Semantic Scholar + Tavily
+- Semantic Scholar 429/错误 → 仅用 OpenAlex + Tavily（无 key 时跳过）
 - search.py 整体失败 → 仅用 Brave `web_search`（始终可用）
 - **永远不要因为某个源失败而阻塞主流程**
 
