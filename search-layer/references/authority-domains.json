@@ -96,11 +96,74 @@
   },
   "tier4_default_score": 0.4,
 
+  "academic": {
+    "description": "Academic platforms authority tiers for scholarly search",
+    "tier1_academic": {
+      "score": 1.0,
+      "description": "Top-tier academic journals and preprint platforms",
+      "domains": [
+        "nature.com",
+        "sciencemag.org",
+        "cell.com",
+        "arxiv.org",
+        "biorxiv.org",
+        "chemrxiv.org",
+        "ncbi.nlm.nih.gov"
+      ],
+      "notes": "Preprints (arXiv, bioRxiv, chemRxiv) are Tier 1 for rapid scholarly communication"
+    },
+    "tier2_academic": {
+      "score": 0.8,
+      "description": "Authoritative society publishers",
+      "domains": [
+        "ieee.org",
+        "ieeexplore.ieee.org",
+        "acm.org",
+        "dl.acm.org",
+        "springer.com",
+        "link.springer.com",
+        "sciencedirect.com",
+        "onlinelibrary.wiley.com",
+        "pubs.acs.org",
+        "iop.org",
+        "pubs.rsc.org",
+        "osf.io"
+      ],
+      "notes": "IEEE, ACM, ACS, RSC, IOP are top professional societies"
+    },
+    "tier3_academic": {
+      "score": 0.6,
+      "description": "Academic platforms and social networks",
+      "domains": [
+        "scholar.google.com",
+        "researchgate.net",
+        "academia.edu",
+        "mdpi.com",
+        "frontiersin.org",
+        "plos.org"
+      ],
+      "notes": "Open access publishers and academic networking sites"
+    },
+    "tier4_academic": {
+      "score": 0.4,
+      "description": "Other academic resources",
+      "domains": [
+        "deepdyve.com"
+      ],
+      "notes": "Subscription-based document rental platforms"
+    }
+  },
+
   "pattern_rules": [
     {"pattern": "docs.*", "score": 0.9, "note": "Any docs.* subdomain likely official docs"},
     {"pattern": "*.github.io", "score": 0.7, "note": "GitHub Pages project sites"},
     {"pattern": "blog.*", "score": 0.6, "note": "Official company blogs"},
     {"pattern": "*.edu", "score": 0.8, "note": "Educational institutions"},
-    {"pattern": "*.gov", "score": 0.8, "note": "Government sites"}
+    {"pattern": "*.gov", "score": 0.8, "note": "Government sites"},
+    {"pattern": "*.ac.*", "score": 0.8, "note": "Academic institutions (uk, au, etc.)"},
+    {"pattern": "jamanetwork.*", "score": 0.9, "note": "JAMA Network (high-impact medicine)"},
+    {"pattern": "nejm.org", "score": 1.0, "note": "New England Journal of Medicine"},
+    {"pattern": "thelancet.com", "score": 1.0, "note": "The Lancet (top medical journal)"},
+    {"pattern": "jstor.org", "score": 0.5, "note": "JSTOR archive (humanities/social sciences)"}
   ]
 }

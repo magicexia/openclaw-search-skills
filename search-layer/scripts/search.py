@@ -100,8 +100,16 @@ def _load_authority_data():
     if ref_path.exists():
         try:
             data = json.loads(ref_path.read_text())
+            # Load main tier domains
             for tier_key in ("tier1", "tier2", "tier3"):
                 tier = data.get(tier_key, {})
+                score = tier.get("score", 0.4)
+                for d in tier.get("domains", []):
+                    domain_scores[d] = score
+            # Load academic tier domains
+            academic_section = data.get("academic", {})
+            for tier_key in ("tier1_academic", "tier2_academic", "tier3_academic", "tier4_academic"):
+                tier = academic_section.get(tier_key, {})
                 score = tier.get("score", 0.4)
                 for d in tier.get("domains", []):
                     domain_scores[d] = score
@@ -116,6 +124,12 @@ def _load_authority_data():
             "developer.mozilla.org": 1.0, "arxiv.org": 1.0,
             "news.ycombinator.com": 0.8, "dev.to": 0.8, "reddit.com": 0.8,
             "medium.com": 0.6, "hackernoon.com": 0.6,
+            # Academic domains (fallback)
+            "nature.com": 1.0, "sciencemag.org": 1.0, "cell.com": 1.0,
+            "ncbi.nlm.nih.gov": 1.0, "biorxiv.org": 1.0,
+            "ieee.org": 0.8, "acm.org": 0.8, "springer.com": 0.8,
+            "sciencedirect.com": 0.8, "pubs.acs.org": 0.8,
+            "researchgate.net": 0.6, "plos.org": 0.6, "mdpi.com": 0.6,
         }
         default_score = 0.4
 

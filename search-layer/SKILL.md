@@ -43,6 +43,23 @@ description: >
 | **Exploratory** | "深入了解 X"、"X 生态"、"about X" | deep | — | 权威 0.5 |
 | **News** | "X 新闻"、"本周 X"、"X this week" | deep | pd/pw | 新鲜度 0.6 |
 | **Resource** | "X 官网"、"X GitHub"、"X 文档" | fast | — | 关键词 0.5 |
+| **Academic** | "X 论文"、"X 研究"、"X paper"、"X journal" | deep | py | 权威 0.7 |
+
+### 学术意图识别
+
+学术意图（Academic）专门用于检索学术文献和研究内容：
+
+**识别信号：**
+- 包含 "paper"、"论文"、"research"、"研究"
+- 涉及期刊名称：Nature、Science、Cell、arXiv 等
+- 查询学术数据库：PubMed、IEEE、ACM 等
+- 学术主题词汇：hypothesis、methodology、method、doi 等
+
+**学术搜索策略：**
+- 模式：`deep`（需要多源验证）
+- 权重：权威性 0.7（学术来源权威性最重要）
+- 域名偏好：nature.com、sciencemag.org、cell.com、arxiv.org 等
+-  freshness：默认 py（过去一年），可调整
 
 > 详细分类指南见 `references/intent-guide.md`
 
@@ -157,10 +174,24 @@ score = w_keyword × keyword_match + w_freshness × freshness_score + w_authorit
 search.py "query" --mode deep --intent tutorial --domain-boost dev.to,freecodecamp.org
 ```
 
-推荐搭配：
+**学术搜索推荐搭配：**
 - Tutorial → `dev.to, freecodecamp.org, realpython.com, baeldung.com`
 - Resource → `github.com`
 - News → `techcrunch.com, arstechnica.com, theverge.com`
+- Academic → `nature.com, sciencemag.org, cell.com, arxiv.org, ieee.org`
+
+### 学术域名权威评分
+
+学术搜索模式下，域名权威评分尤为关键。系统内置了学术平台权威等级：
+
+| 学术等级 | 评分 | 平台示例 |
+|----------|------|----------|
+| Tier 1 Academic | 1.0 | Nature, Science, Cell, arXiv, bioRxiv, PubMed |
+| Tier 2 Academic | 0.8 | IEEE, ACM, Springer, ScienceDirect, Wiley, ACS, RSC |
+| Tier 3 Academic | 0.6 | Google Scholar, ResearchGate, Academia.edu, MDPI, Frontiers, PLOS |
+| Tier 4 Academic | 0.4 | DeepDyve |
+
+**学术搜索时**，系统会自动识别学术域名并应用对应权威评分。
 
 ---
 
