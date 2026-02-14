@@ -256,6 +256,67 @@ search.py "query" --mode deep --intent tutorial --domain-boost dev.to,freecodeca
 | 最新动态 | `web_search(freshness="pw")` + `search.py --mode deep --intent status --freshness pw` |
 | 对比分析 | `web_search` × 3 queries + `search.py --queries "A vs B" "A pros" "B pros" --intent comparison` |
 | 找资源 | `web_search` + `search.py --mode fast --intent resource` |
-| 学术检索 | `search.py "Transformer research" --mode **academic** --intent academic --freshness py --domain-boost arxiv.org,nature.com` |
+| 学术检索 | `search.py "Transformer research" --mode academic --intent academic --freshness py --domain-boost arxiv.org,nature.com` |
+
+---
+
+## 学术检索导出功能
+
+支持多种格式导出学术检索结果：
+
+```bash
+# 默认 JSON 输出
+python3 search.py "machine learning" --mode academic
+
+# BibTeX 格式（用于文献管理软件）
+python3 search.py "machine learning" --mode academic --export bibtex > references.bib
+
+# CSV 格式（用于 Excel/Numbers）
+python3 search.py "machine learning" --mode academic --export csv > results.csv
+
+# Markdown 格式（可读性好）
+python3 search.py "machine learning" --mode academic --export markdown > results.md
+
+# 纯引用格式
+python3 search.py "machine learning" --mode academic --export citations > citations.txt
+```
+
+### 导出格式对比
+
+| 格式 | 用途 | 说明 |
+|------|------|------|
+| `json` | 程序处理 | 默认格式，包含完整元数据 |
+| `bibtex` | LaTeX/文献管理 | 可导入 Zotero、EndNote、Mendeley |
+| `csv` | 电子表格 | Excel、Numbers、Google Sheets |
+| `markdown` | 阅读/文档 | 格式美观，易于阅读 |
+| `citations` | 参考文献 | 简洁的作者. (年份). 标题. 链接 格式 |
+
+### 示例
+
+**BibTeX 输出**：
+```bibtex
+@article{MechanisticImplicationsOf2007,
+  title = {Mechanistic implications of plastic degradation},
+  author = {Baljit Singh, Nisha Sharma},
+  year = {2007},
+  url = {https://doi.org/10.1016/j.polymdegradstab.2007.11.008}
+}
+```
+
+**Markdown 输出**：
+```markdown
+# 学术检索结果: plastic degradation
+
+**结果数**: 10
+
+---
+
+## 1. Mechanistic implications of plastic degradation
+
+- **年份**: 2007
+- **引用**: 1484
+- **来源**: openalex
+- **链接**: [https://doi.org/...](https://doi.org/...)
+```
 
 **学术检索特性**：自动为每条结果附带可点击链接（Markdown 格式：`[🔗 标题](链接)`），包含引用数和 DOI

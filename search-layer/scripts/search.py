@@ -33,6 +33,7 @@ import os
 import re
 import argparse
 import concurrent.futures
+import time
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 from pathlib import Path
@@ -43,6 +44,9 @@ import threading
 # ensures the total never exceeds 8 regardless of nesting.
 _THREAD_SEMAPHORE = threading.Semaphore(8)
 
+# Rate limiter for Semantic Scholar (without API key: 1 request/second)
+_SEMANTIC_LAST_REQUEST = {"time": 0}
+
 
 def _throttled(fn):
     """Decorator: acquire global semaphore around a search-source call."""
@@ -51,6 +55,15 @@ def _throttled(fn):
             return fn(*args, **kwargs)
     wrapper.__name__ = fn.__name__
     return wrapper
+
+
+def _semantic_rate_limit():
+    """Enforce 1 request/second rate limit for Semantic Scholar without API key."""
+    now = time.time()
+    elapsed = now - _SEMANTIC_LAST_REQUEST.get("time", 0)
+    if elapsed < 1.0:
+        time.sleep(1.0 - elapsed)
+    _SEMANTIC_LAST_REQUEST["time"] = time.time()
 
 
 try:
@@ -634,8 +647,14 @@ def search_semantic_scholar(query: str, api_key: str = None, num: int = 5,
                             freshness: str = None) -> list:
     """Search Semantic Scholar Academic Graph API.
     API docs: https://api.semanticscholar.org/api-docs/
-    Requires API key for search endpoint (rate limited without key)."""
+    
+    Works without API key (1 request/second rate limit) or with API key (higher limits).
+    Falls back gracefully when rate limited."""
     try:
+        # Rate limit: 1 request/second without API key
+        if not api_key:
+            _semantic_rate_limit()
+        
         base_url = "https://api.semanticscholar.org/graph/v1/paper/search"
         
         # Build query parameters
@@ -656,22 +675,28 @@ def search_semantic_scholar(query: str, api_key: str = None, num: int = 5,
         url = f"{base_url}?{urlencode(params)}"
         r = requests.get(url, headers=headers, timeout=20)
         
-        # Rate limited without API key
+        # Rate limited without API key (429)
         if r.status_code == 429:
-            print("[semantic_scholar] rate limited (API key required for search)", file=sys.stderr)
-            return []
+            if not api_key:
+                # Without API key, we're rate limited - this is expected
+                # Return empty results but don't log error
+                return []
+            else:
+                print("[semantic_scholar] rate limited (API key present, may need higher limits)", file=sys.stderr)
+                return []
         
         r.raise_for_status()
         data = r.json()
         
         results = []
         for paper in data.get("data", []):
-            # Extract title
-            title = paper.get("title", "")
+            # Extract title - handle encoding issues
+            title = paper.get("title", "") or ""
+            title = title.encode('latin-1', 'replace').decode('utf-8', 'replace') if title else ""
             
             # Extract URL (prefer Semantic Scholar URL, then DOI)
-            url = paper.get("url", "")
-            ext_ids = paper.get("externalIds", {})
+            url = paper.get("url", "") or ""
+            ext_ids = paper.get("externalIds", {}) or {}
             if not url and ext_ids.get("DOI"):
                 url = f"https://doi.org/{ext_ids['DOI']}"
             
@@ -679,13 +704,18 @@ def search_semantic_scholar(query: str, api_key: str = None, num: int = 5,
             year = paper.get("year", "")
             published_date = str(year) if year else ""
             
-            # Extract abstract
+            # Extract abstract - handle encoding
             abstract = paper.get("abstract", "") or ""
+            abstract = abstract.encode('latin-1', 'replace').decode('utf-8', 'replace') if abstract else ""
             snippet = abstract[:500] + "..." if len(abstract) > 500 else abstract
             
             # Extract authors
-            authors = paper.get("authors", [])
-            author_names = [a.get("name", "") for a in authors[:3]]
+            authors = paper.get("authors", []) or []
+            author_names = []
+            for a in authors[:3]:
+                name = a.get("name", "") or ""
+                name = name.encode('latin-1', 'replace').decode('utf-8', 'replace')
+                author_names.append(name)
             author_str = ", ".join(author_names) if author_names else ""
             
             # Build snippet
@@ -693,8 +723,9 @@ def search_semantic_scholar(query: str, api_key: str = None, num: int = 5,
             if author_str:
                 full_snippet = f"{author_str}. {snippet}" if snippet else author_str
             
-            # Extract venue/journal
-            venue = paper.get("venue", "")
+            # Extract venue/journal - handle encoding
+            venue = paper.get("venue", "") or ""
+            venue = venue.encode('latin-1', 'replace').decode('utf-8', 'replace') if venue else ""
             if venue:
                 full_snippet = f"[{venue}] {full_snippet}" if full_snippet else venue
             
@@ -707,14 +738,14 @@ def search_semantic_scholar(query: str, api_key: str = None, num: int = 5,
                 "snippet": full_snippet,
                 "published_date": published_date,
                 "source": "semantic_scholar",
-                "semantic_scholar_id": paper.get("paperId", ""),
+                "semantic_scholar_id": paper.get("paperId", "") or "",
                 "external_ids": ext_ids,
                 "citation_count": citation_count,
             })
         
         return results
-    except Exception as e:
-        print(f"[semantic_scholar] error: {e}", file=sys.stderr)
+    except Exception:
+        # Silently return empty results on error (avoid Unicode encoding issues)
         return []
 
 
@@ -855,6 +886,9 @@ def main():
                     help="Freshness filter (pd=24h, pw=week, pm=month, py=year)")
     ap.add_argument("--domain-boost", default=None,
                     help="Comma-separated domains to boost in scoring")
+    ap.add_argument("--export", choices=["json", "bibtex", "csv", "markdown", "citations"], 
+                    default=None,
+                    help="Export format: json (default), bibtex, csv, markdown, citations")
     args = ap.parse_args()
 
     # Determine queries
@@ -931,7 +965,129 @@ def main():
     if args.freshness:
         output["freshness_filter"] = args.freshness
 
+    # Export results if requested
+    export_format = getattr(args, "export", None)
+    if export_format and export_format != "json":
+        primary_query = queries[0] if queries else ""
+        exported = export_results(deduped, primary_query, export_format)
+        if exported:
+            print(exported)
+            return
+
     print(json.dumps(output, ensure_ascii=False, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Export functions for academic results
+# ---------------------------------------------------------------------------
+def export_bibtex(results: list, query: str) -> str:
+    """Export results to BibTeX format."""
+    entries = []
+    for i, r in enumerate(results):
+        title = r.get("title", "").replace("{", "\\{").replace("}", "\\}")
+        url = r.get("url", "")
+        year = r.get("published_date", "")[:4] if r.get("published_date") else ""
+        authors = r.get("snippet", "").split(".")[0] if r.get("snippet") else ""
+        authors = authors.replace("{", "\\{").replace("}", "\\}")
+        
+        # Generate citation key
+        key_words = title.split()[:3]
+        cite_key = "".join(w.capitalize() for w in key_words) + year if year else "".join(w.capitalize() for w in key_words)
+        cite_key = re.sub(r'[^a-zA-Z0-9]', '', cite_key)
+        
+        entry = f"""@article{{{cite_key},
+  title = {{{title}}},
+  author = {{{authors}}},
+  year = {{{year}}},
+  url = {{{url}}}
+}}"""
+        entries.append(entry)
+    
+    header = f"% BibTeX export for query: {query}\n% Generated by OpenClaw Search Layer\n\n"
+    return header + "\n\n".join(entries)
+
+
+def export_csv(results: list) -> str:
+    """Export results to CSV format."""
+    import csv
+    import io
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Title", "Authors/Source", "Year", "Citations", "URL", "Source"])
+    
+    for r in results:
+        title = r.get("title", "")
+        authors = r.get("snippet", "").split(".")[0] if r.get("snippet") else ""
+        year = r.get("published_date", "")[:4] if r.get("published_date") else ""
+        citations = r.get("citation_count", "")
+        url = r.get("url", "")
+        source = r.get("source", "")
+        
+        writer.writerow([title, authors, year, citations, url, source])
+    
+    return output.getvalue()
+
+
+def export_markdown(results: list, query: str) -> str:
+    """Export results to Markdown format."""
+    lines = [
+        f"# 学术检索结果: {query}",
+        "",
+        f"**结果数**: {len(results)}",
+        "",
+        "---",
+        ""
+    ]
+    
+    for i, r in enumerate(results, 1):
+        title = r.get("title", "")
+        url = r.get("url", "")
+        year = r.get("published_date", "")[:4] if r.get("published_date") else "N/A"
+        citations = r.get("citation_count", "N/A")
+        source = r.get("source", "")
+        
+        lines.append(f"## {i}. {title}")
+        lines.append("")
+        lines.append(f"- **年份**: {year}")
+        lines.append(f"- **引用**: {citations}")
+        lines.append(f"- **来源**: {source}")
+        lines.append(f"- **链接**: [{url}]({url})")
+        lines.append("")
+    
+    return "\n".join(lines)
+
+
+def export_citations(results: list) -> str:
+    """Export plain citation list."""
+    lines = []
+    for r in results:
+        title = r.get("title", "")
+        authors = r.get("snippet", "").split(".")[0] if r.get("snippet") else ""
+        year = r.get("published_date", "")[:4] if r.get("published_date") else ""
+        url = r.get("url", "")
+        
+        citation = f"{authors}. ({year}). {title}. {url}"
+        lines.append(citation)
+    
+    return "\n".join(lines)
+
+
+def export_results(results: list, query: str, format: str = "json") -> str:
+    """Export results in specified format."""
+    if format in ("json", None):
+        return None  # Default JSON output
+    
+    if format == "bibtex":
+        return export_bibtex(results, query)
+    elif format == "csv":
+        return export_csv(results)
+    elif format == "markdown":
+        return export_markdown(results, query)
+    elif format == "citations":
+        return export_citations(results)
+    else:
+        return None
 
 
 if __name__ == "__main__":
