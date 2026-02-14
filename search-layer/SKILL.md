@@ -100,21 +100,29 @@ python3 /home/node/.openclaw/workspace/skills/search-layer/scripts/search.py \
 ```
 
 **各模式源参与矩阵**：
-| 模式 | Exa | Tavily | Grok | 说明 |
-|------|-----|--------|------|------|
-| fast | ✅ | ❌ | fallback | Exa 优先；无 Exa key 时用 Grok |
-| deep | ✅ | ✅ | ✅ | 三源并行 |
-| answer | ❌ | ✅ | ❌ | 仅 Tavily（含 AI answer） |
+| 模式 | Exa | Tavily | Grok | OpenAlex | 说明 |
+|------|-----|--------|------|----------|------|
+| fast | ✅ | ❌ | fallback | ❌ | Exa 优先；无 Exa key 时用 Grok |
+| deep | ✅ | ✅ | ✅ | ❌ | 三源并行 |
+| answer | ❌ | ✅ | ❌ | ❌ | 仅 Tavily（含 AI answer） |
+| academic | ❌ | ✅ | ❌ | ✅ | OpenAlex + Tavily 学术检索 |
 
 **参数说明**：
 | 参数 | 说明 |
 |------|------|
 | `--queries` | 多个子查询并行执行（也可用位置参数传单个查询） |
-| `--mode` | fast / deep / answer |
-| `--intent` | 意图类型，影响评分权重（不传则不评分，行为与 v1 一致） |
+| `--mode` | fast / deep / answer / **academic** |
+| `--intent` | 意图类型，影响评分权重（不传则不评分） |
 | `--freshness` | pd(24h) / pw(周) / pm(月) / py(年) |
 | `--domain-boost` | 逗号分隔的域名，匹配的结果权威分 +0.2 |
 | `--num` | 每源每查询的结果数 |
+
+**OpenAlex 源说明**：
+- 免费的学术知识图谱，2亿+ 学术文献
+- 无需 API Key 即可使用（注册后有更高限流）
+- 在 **academic** 模式下与 Tavily 并行检索
+- 返回论文标题、作者、DOI、引用数、被引次数等元数据
+- 需要在 TOOLS.md 中配置 `OpenAlex` API Key（可选）
 
 **Grok 源说明**：
 - 通过 completions API 调用 Grok 模型（`grok-4.1`），利用其实时知识返回结构化搜索结果
@@ -216,6 +224,7 @@ search.py "query" --mode deep --intent tutorial --domain-boost dev.to,freecodeca
 - Exa 429/5xx → 继续 Brave + Tavily + Grok
 - Tavily 429/5xx → 继续 Brave + Exa + Grok
 - Grok 超时/错误 → 继续 Brave + Exa + Tavily
+- OpenAlex 错误 → 仅用 Tavily（学术检索降级为通用搜索）
 - search.py 整体失败 → 仅用 Brave `web_search`（始终可用）
 - **永远不要因为某个源失败而阻塞主流程**
 
@@ -238,6 +247,6 @@ search.py "query" --mode deep --intent tutorial --domain-boost dev.to,freecodeca
 | 最新动态 | `web_search(freshness="pw")` + `search.py --mode deep --intent status --freshness pw` |
 | 对比分析 | `web_search` × 3 queries + `search.py --queries "A vs B" "A pros" "B pros" --intent comparison` |
 | 找资源 | `web_search` + `search.py --mode fast --intent resource` |
-| 学术检索 | `search.py "Transformer research" --mode deep --intent academic --freshness py --domain-boost arxiv.org,nature.com` |
+| 学术检索 | `search.py "Transformer research" --mode **academic** --intent academic --freshness py --domain-boost arxiv.org,nature.com` |
 
-**学术检索特性**：自动为每条结果附带可点击链接（Markdown 格式：`[标题](链接)`）
+**学术检索特性**：自动为每条结果附带可点击链接（Markdown 格式：`[🔗 标题](链接)`），包含引用数和 DOI
